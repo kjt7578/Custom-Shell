@@ -1,0 +1,53 @@
+416 Project 3
+Janelle Barcia, Nikolay Feldman
+
+Noteworthy Features:
+-Parsing in this program goes through every character in the buffer array with multiple conditions for quotes, spaces and pipes. tokensToCommands converts the parsed buffer into Command struct elements (char**), that can be easily passed to execvp. All of this runs in O(n) time.
+-Piping in this program works by each command having a command struct. Within the command struct there is an array of size 2 to hold the standard in and out. When there is more than one command (and therefore a pipe), main calls one function called “runcmd” to dup2, fork and execvp. Pipes are opened and closed within the main method, where there is a special case for the first command (only one pipe closed), the possible middle commands (two pipes closed) and the last command where another pipe is closed. There is a special method for when there is only one command, as piping is not needed for this instance.
+-Every times the main method while loop loops around waiting for more input, every command struct element is freed from memory in a method called “clean”.
+
+Provided Test Cases:
+1.Empty Command #1 (new line)
+-new line prompt shows ($)
+2. Empty Command #2 (spaces and tabs with new line)
+-new line prompt shows ($)
+3. Exit on the end of the file (control D)
+-exits cleanly
+4. A shell prompt for each line of input
+-prompt on line of imput
+5. No shell prompt if the standard input is not a terminal ((echo echo abc;echo echo def;echo echo ghi)|./shell)
+-three processes/abc def ghi prints successfully
+6. The shell should run a simple command with arguments
+-echo hello, world (outputs hello, world with process)
+7. The shell should print an exit code for each process that terminates.
+-prints process with exit for each process
+8. Handle too many arguments gracefully, ex: echo a b c d e f g h i j k l m n o p q r s t u v w x y z a b c d e f g h i j k l m n o p q r s t u v w x y z a b c d e f g h i j k l m n o p q r s t u v w x y z a b c d e f g h i j k l m n o p q r s t u v w x y z
+-error code is printed for too many args
+9.Quotes should be handled properly (echo "abc" "def" 'ghi' 'jkl')
+-outputs as expected, abc def ghi jkl outputs
+10. Spaces within quotes should be parsed correctly. (./echoargs 'abc def ghi' "j     k   l”)
+-correct output, argc arg[0] arg[1] arg[2] show
+11. Mismatched quote, ex: echo 'abc
+-error message printed and exited
+12. Mismatched quote 2, ex: echo 'abc"
+-error message printed and exited
+13. Single Pipe command should work, ex: ls -laF /|tr a-z A-Z
+-prints successfully
+14. Pipeline of three command should work, ex: ls -alF  / | grep bin | cat -n
+-prints successfully
+15. Pipeline of more than three commands should work, ex: ls -alF  / | grep bin | tr a-z 'A-Z' |rev|cat -n
+-prints successfully
+16. The cd command should work with one argument, ex: cd /etc
+-prints successfully
+17. cd command should work with no arguments, ex: cd pwd prints home directory
+-prints successfully
+18. cd command should barf when given more than one argument, ex: cd /etc /home
+-error message printed
+19. The exit command should exit with no arguments
+-exits successfully
+20. The exit command should exit with an argument, ex: exit 123
+-exits successfully and prints 123
+21. Check that the shell is able to accept at least 10 commands, ex: (typeset -i i;i=0;while [ $i -lt 10 ];do echo echo $i;i=i+1;done)|./myshell
+-all 10 process for each command print and exit successfully
+22. Shell accepts at least 1000 commands (typeset -i i;i=0;while [ $i -lt 1000 ];do echo echo $i;i=i+1;done)|./myshell)
+-all 1000 processes for each command print and exit successfully
