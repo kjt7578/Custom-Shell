@@ -1,16 +1,34 @@
-all: main
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c99
 
-CC = clang
-override CFLAGS += -g -Wno-everything -pthread -lm
+# Source files
+SRCS = mysh.c tokenizer.c arraylist.c
 
-SRCS = $(shell find . -name '.ccls-cache' -type d -prune -o -type f -name '*.c' -print)
-HEADERS = $(shell find . -name '.ccls-cache' -type d -prune -o -type f -name '*.h' -print)
+# Object files
+OBJS = $(SRCS:.c=.o)
 
-main: $(SRCS) $(HEADERS)
-	$(CC) $(CFLAGS) $(SRCS) -o "$@"
+# Dependency files
+DEPS = $(SRCS:.c=.d)
 
-main-debug: $(SRCS) $(HEADERS)
-	$(CC) $(CFLAGS) -O0 $(SRCS) -o "$@"
+# Executable
+TARGET = mysh
+
+# Compilation rule
+%.o: %.c
+    $(CC) $(CFLAGS) -c $< -o $@
+
+# Dependency generation rule
+%.d: %.c
+    $(CC) -MM $(CFLAGS) $< > $@
+
+# Include dependency files
+-include $(DEPS)
+
+# Build rule
+$(TARGET): $(OBJS)
+    $(CC) $(CFLAGS) $^ -o $@
+
+.PHONY: clean
 
 clean:
-	rm -f main main-debug
+    rm -f $(OBJS) $(DEPS) $(TARGET)

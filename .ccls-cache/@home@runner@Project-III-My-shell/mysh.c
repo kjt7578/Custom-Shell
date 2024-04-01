@@ -1,191 +1,584 @@
-//BUG : it always says No such file or directory if we type the other builtin command
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h> // For strtok() and strcmp()
-#include <unistd.h> // For fork(), pid_t
-#include <sys/wait.h> // For waitpid() and associated macros
+#include <unistd.h>
+#include <string.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include "mysh.h"
+#include "arraylist.h"
+#include "tokenizer.h"
 
-#ifndef DEBUG
-#define DEBUG 0
-#endif
+int main (int argc, char **argv) {
+	if (init(argc, argv) == EXIT_FAILURE) {
+		return EXIT_FAILURE;
+	}
 
-char SHELL_NAME[50] = "mysh";
-int EXIT = 0;
+	// main input loop
+	do {
+		if (mode == INTERACTIVE) {
+			printf("mysh> ");
+			fflush(stdout);
+		}
+    char* input = NULL;
+    input = readLine(input);
+		if (input == NULL) {
+			if (MYSH_DEBUG && exit_shell != 1) {
+				fprintf(stderr, "ERROR: readLine returns null\n");
+			}
+			break;
+		}
 
-int interactMode();
-char *readLine();
-char **splitLine(char *line);
-int executeCommand(char **args);
-int numOfBuiltin();
-int myShellLaunch(char **args);
+		if (MYSH_DEBUG) {
+			printf(";%s;\n", input);
+		}
 
-//BUILTIN COMMANDS
-int myShell_cd(char **args);
-int myShell_exit();
+		if (strlen(input) != 0) {
+      ArrayList* arraylist = al_create(1);
+			int tokenizer_rv = tokenizer(arraylist, input) != 0;
+			free(input);
 
-char *builtin_cmd[] = {"cd", "exit"};  // TO BE ADDED MORE
-int (*builtin_func[]) (char **) = {&myShell_cd, &myShell_exit}; // Array of function pointers for call from execShell
+			if (MYSH_DEBUG) {
+				al_print(arraylist);
+			}
+			
+			if (tokenizer_rv != 0) {
+				if(arraylist->length > 0) {
+					if (check_conditionals(arraylist) == EXIT_SUCCESS) {
+						int pipes = al_contains(arraylist, "|");
+						if (pipes == 0) {
+							create_run_job(arraylist, -1, -1);
+						} else if (pipes == 1) {
+              ArrayList* left = arraylist;
+              ArrayList* right = al_create(1);
+							int found_pipe = 0;
 
+							for (int i = 0; i < arraylist->length; i++) {
+								char* curr = al_get(arraylist, i);
+								if (strcmp(curr, "|") == 0) {
+									found_pipe = 1;
 
+									if (i == 0 || strcmp(al_get(arraylist, i - 1), "<") == 0 || strcmp(al_get(arraylist, i - 1), ">") == 0) {
+										fprintf(stderr, "mysh: syntax error\n");
+										prev_return_value = EXIT_FAILURE;
+										break;
+									} else if (i == arraylist->length - 1 || strcmp(al_get(arraylist, i + 1), "then") == 0 || strcmp(al_get(arraylist, i + 1), "else") == 0) {
+										fprintf(stderr, "mysh: syntax error\n");
+										prev_return_value = EXIT_FAILURE;
+										break;
+									}
 
-int interactMode(){
-  char *line;
-  char **args;
-  while(EXIT == 0){
-    printf("%s> ", SHELL_NAME);
-    fflush(stdout);
-    line = readLine();
-    if(DEBUG) printf("READ LINE (LINES): %s\n",line);
-    args = splitLine(line);
-    myShellLaunch(args);
-    if(DEBUG) printf("READ LINE (TOKEN) : %s\n",line);    
-    free(line);
-    free(args);
-  }
+									al_remove(left, i);
+									i--;
+								} else if (found_pipe == 1) {
+									al_push(right, al_get(arraylist, i));
+									al_remove(left, i);
+									i--;
+								}								
+							}
 
-  return 1;
+							if (MYSH_DEBUG) {
+								al_print(left);
+								al_print(right);
+							}
+
+							int pipe_fd[2] = {0, 0};
+							if (pipe(pipe_fd) == 0) {
+								create_run_job(left, -1, pipe_fd[1]);
+								create_run_job(right, pipe_fd[0], -1);
+							} else {
+								fprintf(stderr, "Error occurred when creating pipe\n");
+							}
+
+							al_destroy(right);
+						} else if (pipes > 1) {
+							printf("mysh: mysh does not accept more than one pipe\n");
+						}
+					} else {
+						prev_return_value = EXIT_FAILURE;
+					}
+				} else {
+					fprintf(stderr, "ERROR: <= 0 tokens returned\n");
+					al_destroy(arraylist);
+					break;
+				}
+			} else {
+				prev_return_value = EXIT_FAILURE;
+			}
+			al_destroy(arraylist);
+		}
+		if (exit_shell) {
+			break;
+		}
+	} while (1);
+	
+	if (mode == BATCH) {
+		if (close(fd) == -1) {
+			fprintf(stderr, "ERROR: Cannot close %s: %s\n", argv[1], strerror(errno));
+		}
+	}
+	if (exit_shell) {
+		return EXIT_SUCCESS;
+	} else {
+		return EXIT_FAILURE;
+	}
 }
 
-char *readLine()
-{
-    char *line = (char *)malloc(sizeof(char) * 1024);
-    if (!line){
-        perror("Buffer Allocation Error - readLine\n");
-        exit(EXIT_FAILURE);}
+char* readLine (char* buffer) {
+	buffer = malloc(4);
+	int len = 0, capacity = 4;
+	char* i = buffer;
 
-    int pos = 0;
-    ssize_t bufsize = 1024;
-    ssize_t bytes_read;
-    char c;
+	while (len == 0 || *(i - 1) != '\n') {
+		if (len > capacity - 1) {
+			capacity = capacity * 2;
+			buffer = realloc(buffer, capacity);
+			i = buffer + len;
+		}
+		int bytes_read = read(fd, i, 1);
+		
+		if (bytes_read == -1) {
+			fprintf(stderr, "ERROR: Cannot read from file: %s\n", strerror(errno));
+			free(buffer);
+			return NULL;
+		} else if (bytes_read == 0) {
+			exit_shell = 1;
+			if (len == 0) {
+				free(buffer);
+				return NULL;
+			}
+			*i = '\0';
+			return buffer;
+		} else if (*i == '\n') {
+			if (len == 0) {
+				i--;
+			} else {
+				*i = '\0';
+				return buffer;
+			}
+		} else {
+			len++;
+		}
+		i++;
+	}
 
-    while (1){
-        bytes_read = read(STDIN_FILENO, &c, 1); 
-        // read one bytes
-        if (bytes_read == -1){
-            perror("read - readLine\n");
-            free(line);
-            exit(EXIT_FAILURE);}
-        else if (bytes_read == 0 || c == '\n'){ 
-          // End and replace to \0 If EOF or New Line
-            line[pos] = '\0';
-            return line;
+	fprintf(stderr, "ERROR: This loop isn't supposed to terminate\n");
+	free(buffer);
+	return NULL;
+}
+
+int create_run_job(ArrayList* tokens, int pipe_input_fd, int pipe_output_fd) {
+	job_info job;
+
+	job.name = NULL;
+	job.arguments = tokens;
+	job.path_std_in = NULL;
+	job.path_std_out = NULL;
+	job.pipe_std_in = -1;
+	job.pipe_std_out = -1;
+
+	if (pipe_input_fd != -1) {
+		job.pipe_std_in = pipe_input_fd;
+	}
+	if (pipe_output_fd != -1) {
+		job.pipe_std_out = pipe_output_fd;
+	}
+
+	int parse_args_rv = parse_args(tokens, &job);
+
+	if (MYSH_DEBUG) {
+		print_job(&job);
+	}
+
+	if (parse_args_rv == EXIT_SUCCESS) {
+		if (job.name == NULL) {
+			pid = fork();
+			if (pid == 0) {
+				set_std_in(&job);
+				set_std_out(&job);
+				exit(EXIT_SUCCESS);
+			} else {
+				wait(&prev_return_value);
+				clear_job(&job);	
+				return EXIT_SUCCESS;
+			}
+		} else if (strchr(job.name, '/') != NULL) {
+			int fileExists = 0, perms = 0;
+			if (access(job.name, F_OK) == 0) {
+				fileExists = 1;
+				if(access(job.name, X_OK) == 0) {
+					pid = fork();
+					if (pid == 0) {
+						set_std_in(&job);
+						set_std_out(&job);
+
+						al_push(job.arguments, "");
+						void* temp = job.arguments->items[job.arguments->length - 1];
+						job.arguments->items[job.arguments->length - 1] = '\0';
+						
+
+						if (MYSH_DEBUG) {
+							al_print(job.arguments);
+						}
+
+						int exec_rv = execv(job.name, job.arguments->items);
+						if (exec_rv != 0) {
+							free(temp);
+							printf("ERROR: %s\n", strerror(errno));
+							exit(errno);
+						}
+						
+					} else {
+						wait(&prev_return_value);
+					}
+
+					clear_job(&job);	
+					return EXIT_FAILURE;
+				}
+			}
+
+			if (!fileExists || !perms) {
+				fprintf(stderr, "mysh: %s: %s\n", job.name, strerror(errno));
+			}
+			clear_job(&job);
+			prev_return_value = 0;
+			return EXIT_FAILURE;
+		} else if (strcmp(job.name, "exit") == 0) {
+			if (job.path_std_out != NULL) {
+				if (fork() == 0) {
+					set_std_out(&job);
+					exit(EXIT_SUCCESS);
+				} else {
+					wait(&prev_return_value);
+				}
+			}
+			clear_job(&job);
+			printf("Exiting my shell!\n");
+			exit_shell = 1;
+			return EXIT_SUCCESS;
+		} else if (strcmp(job.name, "pwd") == 0) {
+			int id = 1;
+			id = fork();
+			if (id == 0) {
+				set_std_out(&job);
+
+				char* wd = getcwd(NULL, 256);
+				if (wd != NULL) {
+					printf("%s\n", wd);
+					free(wd);
+					exit(EXIT_SUCCESS);
+				} else {
+					fprintf(stderr, "ERROR: getcwd: %s\n", strerror(errno));
+					exit(errno);
+				}
+			} else {
+				wait(&prev_return_value);
+				clear_job(&job);
+				return prev_return_value;
+			}
+		} else if (strcmp(job.name, "cd") == 0) {
+			if (job.arguments->length == 2) {
+				if (chdir(al_get(job.arguments, 1)) != 0) {
+					fprintf(stderr, "mysh: %s: %s\n", job.name, strerror(errno));
+					clear_job(&job);
+					return EXIT_FAILURE;
+				}
+				clear_job(&job);
+				return EXIT_SUCCESS;
+			} else {
+				fprintf(stderr, "mysh: cd: expected 1 argument, got %d\n", job.arguments->length - 1);
+				clear_job(&job);
+				return EXIT_FAILURE;
+			}
+		} else {
+			int which = 0;
+			if (strcmp(job.name, "which") == 0) {
+				which = 1;
+				if (job.arguments->length != 2 || strcmp(al_get(job.arguments, 1), "cd") == 0 || strcmp(al_get(job.arguments, 1), "pwd") == 0 || strcmp(al_get(job.arguments, 1), "which") == 0) {
+					clear_job(&job);
+					return EXIT_FAILURE;
+				} else {
+					free(job.name);
+					job.name = malloc(strlen(al_get(job.arguments, 1)) + 1);
+					strcpy(job.name, al_get(job.arguments, 1));
+				}
+			}
+			const char* dirs[3];
+			dirs[0] = "/usr/local/bin/";
+			dirs[1] = "/usr/bin/";
+			dirs[2] = "/bin/";
+
+			int fileExists = 0, perms = 0;
+
+			for (int i = 0; i < 3; i++) {
+				char* path = malloc(strlen(job.name) + 20);
+				strcpy(path, dirs[i]);
+				strcat(path, job.name);
+
+				if (MYSH_DEBUG) {
+					printf(";%s;\n", path);
+				}
+
+				if (access(path, F_OK) == 0) {
+					fileExists = 1;
+					if(access(path, X_OK) == 0) {
+						pid = fork();
+						if (pid == 0) {
+							set_std_in(&job);
+							set_std_out(&job);
+
+							if (which) {
+								printf("%s\n", path);
+								free(path);
+								exit(EXIT_SUCCESS);
+							} else {
+								al_push(job.arguments, "");
+								void* temp = job.arguments->items[job.arguments->length - 1];
+								job.arguments->items[job.arguments->length - 1] = '\0';
+								
+								if (MYSH_DEBUG) {
+									al_print(job.arguments);
+								}
+
+								int exec_rv = execv(path, job.arguments->items);
+								if (exec_rv != 0) {
+									printf("ERROR: %s\n", strerror(errno));
+									free(temp);
+									exit(errno);
+								}
+							}
+						} else {
+							wait(&prev_return_value);
+						}
+
+						free(path);
+						clear_job(&job);	
+						return prev_return_value;
+					}
+				}
+				free(path);
+			}
+
+			if (!fileExists && which == 0) {
+				if (!perms) {
+					printf("mysh: %s: No such file or directory\n", job.name);
+				} else {
+				printf("mysh: %s: Permission denied\n", job.name);
+				}
+			}
+			clear_job(&job);
+			return EXIT_FAILURE;
+		}			
+	} else {
+		return EXIT_FAILURE;
+	}
+}
+
+// configures shell before it can take user input
+// sets mode and validates arguments
+int init(int argc, char** argv) {
+	if (argc == 1) {
+		printf("Welcome to my shell!\n");
+		fd = STDIN_FILENO;
+		mode = INTERACTIVE;
+		return EXIT_SUCCESS;
+	} else if (argc == 2) {
+		if (access(argv[1], R_OK) == 0) {
+			if (is_dir(argv[1]) == 0) {
+				fd = open(argv[1], O_RDONLY);
+				if (fd > 0) {
+					mode = BATCH;
+					return EXIT_SUCCESS;
+				}
+			} 
+		}
+	} else {
+		errno = E2BIG;
+	}
+
+	fprintf(stderr, "mysh: ");
+	if (argc == 2) {
+		fprintf(stderr, "%s: ", argv[1]);
+	}
+	fprintf(stderr, "%s\n", strerror(errno));
+	return EXIT_FAILURE;
+}
+
+// return 0 if arg is not a dir
+// return 1 if arg is a dir
+int is_dir (char* arg) {
+	struct stat file_buffer;
+	if (stat(arg, &file_buffer) == 0) {
+		if (S_ISDIR(file_buffer.st_mode) == 0) {
+			return 0;
+		} else {
+			errno = EISDIR;
+			return 1;
+		}
+	} else {
+		return 1;
+	}
+}
+
+int check_conditionals (ArrayList* arraylist) {
+	if (strcmp(al_get(arraylist, 0), "then") == 0) {
+		if (arraylist->length == 1) {
+			fprintf(stderr, "mysh: syntax error: list a command after then\n");
+			return EXIT_FAILURE;				
+		}
+
+		if (prev_return_value == EXIT_SUCCESS) {
+			al_remove(arraylist, 0);
+			return EXIT_SUCCESS;
+		} else if (prev_return_value == -1) {
+			fprintf(stderr, "mysh: cannot run conditional job when there is no previous state\n");
+		}
+		return EXIT_FAILURE;
+	} else if (strcmp(al_get(arraylist, 0), "else") == 0) {
+		if (arraylist->length == 1) {
+			fprintf(stderr, "mysh: syntax error: list a command after else\n");
+			return EXIT_FAILURE;
+		}
+
+		if (prev_return_value != EXIT_SUCCESS && prev_return_value != -1) {
+			al_remove(arraylist, 0);
+			return EXIT_SUCCESS;
+		} else if (prev_return_value == -1) {
+			fprintf(stderr, "mysh: cannot run conditional job when there is no previous state\n");
+		}
+		return EXIT_FAILURE;
+	} else {
+		return EXIT_SUCCESS;
+	}
+}
+
+int parse_args (ArrayList* tokens, job_info* job) {
+	if (tokens->length < 1) {
+		fprintf(stderr, "mysh: syntax error\n");
+		return EXIT_FAILURE;
+	}
+
+	// process redirects
+	for (int i = 0; i < tokens->length; i++) {
+		if (strcmp(al_get(tokens, i), ">") == 0) {
+			if (i < tokens->length - 1) {
+				if (job->path_std_out != NULL) {
+					free(job->path_std_out);
+					job ->path_std_out = NULL;
+				}
+				job->path_std_out = malloc(strlen(al_get(tokens, i + 1)) + 1);
+				strcpy(job->path_std_out, al_get(tokens, i + 1));
+				al_remove(tokens, i);
+				al_remove(tokens, i);
+				i -= 1;
+			} else {
+				fprintf(stderr, "mysh: syntax error\n");
+				return EXIT_FAILURE;
+			}
+		} else if (strcmp(al_get(tokens, i), "<") == 0) {
+			if (i < tokens->length - 1) {
+				if (job->path_std_in != NULL) {
+					free(job->path_std_in);
+					job ->path_std_in = NULL;
+				}
+				job->path_std_in = malloc(strlen(al_get(tokens, i + 1)) + 1);
+				strcpy(job->path_std_in, al_get(tokens, i + 1));
+				printf("%s\n", job->path_std_in);
+				al_remove(tokens, i);
+				al_remove(tokens, i);
+				i -= 1;
+			} else {
+				fprintf(stderr, "mysh: syntax error\n");
+				return EXIT_FAILURE;
+			}
+		}
+	}
+
+	// find job name
+	for (int i = 0; i < tokens->length; i++) {
+		job->name = malloc(strlen(al_get(tokens, i)) + 1);
+		strcpy(job->name, al_get(tokens, i));
+		break;
+	}
+
+	return EXIT_SUCCESS;
+}
+
+void clear_job(job_info* job) {
+	if (job == NULL) {
+		return;
+	}
+	if (job->name != NULL){
+		free(job->name);
+	}
+	if (job->path_std_in != NULL) {
+		free(job->path_std_in);
+	}
+	if(job->path_std_out != NULL) {
+		free(job->path_std_out);
+	}
+}
+
+void print_job(job_info* job) {
+	fprintf(stderr, "=== JOB ===\n");
+	fprintf(stderr, "NAME: %s\n", null_wrapper(job->name));
+	fprintf(stderr, "STDIN: %s\n", null_wrapper(job->path_std_in));
+	fprintf(stderr, "STDOUT: %s\n", null_wrapper(job->path_std_out));
+	fprintf(stderr, "PIPE_STD_IN: %d\n", job->pipe_std_in);
+	fprintf(stderr, "PIPE_STD_OUT: %d\n", job->pipe_std_out);
+	fprintf(stderr, "ARGS:\n");
+	al_print(job->arguments);
+	fprintf(stderr, "===========\n");
+}
+
+char* null_wrapper(char* field) {
+	if (field != NULL) {
+		return field;
+	} else {
+		return "NULL";
+	}
+}
+
+int set_std_in (job_info* job) {
+	if (job->path_std_in != NULL) {
+		if (access(job->path_std_in, R_OK) == 0) {
+			int std_in = open(job->path_std_in, O_RDONLY);
+			dup2(std_in, STDIN_FILENO);
+		} else {
+			fprintf(stderr, "mysh: %s: %s\n", job->path_std_in, strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+	} else if (job->pipe_std_in != -1) {
+		dup2(job->pipe_std_in, STDIN_FILENO);
+	}
+	return EXIT_SUCCESS;
+}
+
+int set_std_out (job_info* job) {
+    if (job->path_std_out != NULL) {
+        int std_out;
+        if (access(job->path_std_out, W_OK) == 0) {
+            std_out = open(job->path_std_out, O_WRONLY | O_TRUNC);
+        } else {
+            std_out = open(job->path_std_out, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         }
-        else{
-            line[pos] = c;
+        if (std_out == -1) {
+            perror("open");
+            return EXIT_FAILURE;
         }
-        pos++;
-
-        // reallocate if buffer exceeded
-        if (pos >= bufsize){
-            bufsize += 1024;
-            line = realloc(line, bufsize * sizeof(char));
-            if (!line){
-                perror("Buffer Allocation Error - readLine\n");
-                exit(EXIT_FAILURE);
-            }
+        if (dup2(std_out, STDOUT_FILENO) == -1) {
+            perror("dup2");
+            close(std_out);
+            return EXIT_FAILURE;
+        }
+        close(std_out);
+    } else if (job->pipe_std_out != -1) {
+        if (dup2(job->pipe_std_out, STDOUT_FILENO) == -1) {
+            perror("dup2");
+            return EXIT_FAILURE;
         }
     }
-}
-
-char **splitLine(char *line){
-  char **tokens = (char **)malloc(sizeof(char *) * 64);
-  char *token;
-  char delim[10] = " \t\n\r\a";  // define delimiter
-  int pos = 0, bufsize = 64;
-  if (!tokens){
-    perror("Buffer Allocation Error. - splitLine 1\n");
-    exit(EXIT_FAILURE);}
-  
-  token = strtok(line, delim); // search first delimiter
-  while (token != NULL){
-      tokens[pos] = token;
-      pos ++;
-      if (pos >= bufsize){  // realloc
-        bufsize += 64;
-        line = realloc(line, bufsize * sizeof(char *));
-        if (!line){
-        perror("Buffer Allocation Error. - splitLine 2\n");
-        exit(EXIT_FAILURE);}
-      }
-      token = strtok(NULL, delim);  // Keep searching delimiter
-    }
-    tokens[pos] = NULL;
-    return tokens;
-  }
-
-int executeCommand(char **args){
-  int ret;
-  if(args[0] == NULL){
-    return 1; // no command
-  }
-  for (int i=0; i < numOfBuiltin(); i++){
-    if(strcmp(args[0], builtin_cmd[i]) == 0) // Check if user function matches builtin function name      
-      return (*builtin_func[i])(args); // Call respective builtin function with arguments
-  }
-  ret = myShellLaunch(args);
-  return ret;
-}
-
-int numOfBuiltin() // Function to return number of builtin commands
-{
-  return sizeof(builtin_cmd)/sizeof(char *);
-}
-
-int myShellLaunch(char **args) // 왜 있는지 모르겠음 체크바람.
-{
-  pid_t pid, wpid;
-  int status;
-  pid = fork();
-  if (pid == 0)
-  {
-    // The Child Process
-    if (execvp(args[0], args) == -1)
-    {
-      perror("myShell: ");
-    }
-  exit(EXIT_FAILURE);
-  }
-  else if (pid < 0)
-  {
-    //Forking Error
-    perror("myShell: ");
-  }
-  else
-  {
-    // The Parent Process
-  do 
-  {
-      wpid = waitpid(pid, &status, WUNTRACED);
-    } while (!WIFEXITED(status) && !WIFSIGNALED(status));
-  }
-  return 1;
-}
-
-
-//BUILTIN COMMAND
-// Builtin command definitions
-int myShell_cd(char **args){
-  if (args[1] == NULL){
-    printf("myShell: expected argument to \"cd\"\n");
-  } 
-  else{
-    if (chdir(args[1]) != 0) 
-    {
-      perror("myShell: ");
-    }
-  }
-  return 1;
-}
-
-int myShell_exit(){
-  EXIT = 1;
-  return 0;
-}
-
-int main(void) {
-  //check interactive mode or batch mode
-  //if(isatty(1))
-  //else
-  interactMode();
+    return EXIT_SUCCESS;
 }
