@@ -1,3 +1,6 @@
+//cat instruc.txt | grep good > input.txt
+
+
 Project-III-My-shell
 Jeongtae Kim (jkim2065)
 
@@ -87,13 +90,8 @@ Pipes
 A pipe connects standard input from one program to the standard output from another, allowing
 data to “flow” from one program to the next. mysh allows for a single pipe connecting two processes.
 
-For example,
-foo bar < baz | quux *.txt > spam  (this tests are not implemented)
-this executed in a directory containing files “bacon.txt” and “eggs.txt” will start a pipeline with two
-processes.
-The first has argument list (“foo”, “bar”), with input redirected to “baz”.
-The second has argument list (“quux”, “bacon.txt”, “eggs.txt”), with output redirected to “spam”.
-In this sequence of commands,
+cd testcase
+cat output.txt | grep 123 number.txt  > output.txt
 
 Error handeling
 -----------------
