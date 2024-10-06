@@ -50,6 +50,7 @@ This program supports two modes of execution: **Interactive mode** and **Batch m
 
 2. **Batch Mode**:
    Provide a file containing commands as input to run them in batch mode:
+   ```bash
    ./mysh [filename]
 
 Example:
