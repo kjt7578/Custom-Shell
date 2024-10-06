@@ -52,7 +52,14 @@ This program supports two modes of execution: **Interactive mode** and **Batch m
    Provide a file containing commands as input to run them in batch mode:
    ./mysh [filename]
 
-
+Example:
+$ ./mysh
+Welcome to mysh!
+mysh> cd subdir
+mysh> echo hello
+hello
+mysh> exit
+mysh: exiting
 
 
 
